@@ -1,11 +1,14 @@
 <?php
 /**
- * Plugin Name: CashiPay Payment Gateway
- * Description: CashiPay wallet payment gateway for WooCommerce — QR-code & OTP payments with per-payment webhook authentication.
- * Version:     1.0.0
- * Author:      CashiPay
- * License:     MIT
- * Text Domain: cashipay
+ * Plugin Name:  CashiPay Payment Gateway
+ * Plugin URI:   https://github.com/amolood/cashipay-wordpress
+ * Description:  CashiPay wallet payment gateway for WooCommerce — QR-code & OTP payments with per-payment webhook authentication.
+ * Version:      1.0.1
+ * Author:       CashiPay
+ * Author URI:   https://cashipay.com
+ * License:      MIT
+ * Text Domain:  cashipay
+ * Domain Path:  /languages
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * WC requires at least: 6.0
@@ -14,7 +17,7 @@
 
 defined('ABSPATH') || exit;
 
-define('CASHIPAY_VERSION',    '1.0.0');
+define('CASHIPAY_VERSION',    '1.0.1');
 define('CASHIPAY_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('CASHIPAY_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -49,4 +52,11 @@ add_action('plugins_loaded', function () {
     });
 
     add_action('rest_api_init', ['CashiPay_Webhook', 'register_routes']);
+
+    // Quick "Settings" link on the Plugins page.
+    add_filter('plugin_action_links_' . plugin_basename(__FILE__), function ($links) {
+        $url = admin_url('admin.php?page=wc-settings&tab=checkout&section=cashipay');
+        array_unshift($links, '<a href="' . esc_url($url) . '">' . esc_html__('Settings', 'cashipay') . '</a>');
+        return $links;
+    });
 });

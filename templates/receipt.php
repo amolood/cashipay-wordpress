@@ -2,15 +2,18 @@
 /**
  * CashiPay payment receipt page.
  *
- * Variables available: $order_id, $order, $reference, $qr_url, $wallet, $amount, $mode, $return_url
+ * Variables provided by receipt_page():
+ *   WC_Order $order, int $order_id, string $reference, string $qr_url,
+ *   string $wallet, float $amount, string $mode, string $return_url
  */
 defined('ABSPATH') || exit;
 
-$show_qr  = !empty($qr_url)  && in_array($mode, ['qr', 'both'], true);
-$show_otp = !empty($wallet)   && in_array($mode, ['otp', 'both'], true);
+$show_qr  = !empty($qr_url) && in_array($mode, ['qr', 'both'], true);
+$show_otp = !empty($wallet) && in_array($mode, ['otp', 'both'], true);
 ?>
 <div class="cashipay-payment-wrap"
      data-order-id="<?php echo esc_attr($order_id); ?>"
+     data-order-key="<?php echo esc_attr($order->get_order_key()); ?>"
      data-return-url="<?php echo esc_url($return_url); ?>">
 
     <div class="cashipay-header">
@@ -18,10 +21,14 @@ $show_otp = !empty($wallet)   && in_array($mode, ['otp', 'both'], true);
         <p class="cashipay-amount"><?php echo wp_kses_post(wc_price($amount)); ?></p>
         <p class="cashipay-reference">
             <?php
-            printf(
-                /* translators: %s: payment reference number */
-                esc_html__('Reference: %s', 'cashipay'),
-                '<code>' . esc_html($reference) . '</code>'
+            // Safe: format string is translated and trusted; $reference is escaped.
+            echo wp_kses(
+                sprintf(
+                    /* translators: %s: CashiPay payment reference number */
+                    __('Reference: %s', 'cashipay'),
+                    '<code>' . esc_html($reference) . '</code>'
+                ),
+                ['code' => []]
             );
             ?>
         </p>
@@ -48,16 +55,21 @@ $show_otp = !empty($wallet)   && in_array($mode, ['otp', 'both'], true);
         <h3><?php esc_html_e('Enter OTP', 'cashipay'); ?></h3>
         <p>
             <?php
-            printf(
-                /* translators: %s: wallet account number */
-                esc_html__('Enter the OTP sent to your CashiPay wallet (%s).', 'cashipay'),
-                esc_html($wallet)
+            echo esc_html(
+                sprintf(
+                    /* translators: %s: wallet account number */
+                    __('Enter the OTP sent to your CashiPay wallet (%s).', 'cashipay'),
+                    $wallet
+                )
             );
             ?>
         </p>
         <form id="cashipay-otp-form" autocomplete="off">
-            <?php wp_nonce_field('cashipay_nonce', 'cashipay_nonce_field'); ?>
-            <input type="hidden" name="order_id" value="<?php echo esc_attr($order_id); ?>" />
+            <?php
+            // order_id and order_key are read by JS; the nonce comes from cashipayData.nonce.
+            ?>
+            <input type="hidden" name="order_id"  value="<?php echo esc_attr($order_id); ?>" />
+            <input type="hidden" name="order_key" value="<?php echo esc_attr($order->get_order_key()); ?>" />
             <p class="form-row">
                 <input type="text"
                        id="cashipay-otp-input"

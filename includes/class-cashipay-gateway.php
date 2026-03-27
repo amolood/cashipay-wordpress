@@ -10,7 +10,7 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
         $this->has_fields         = true;
         $this->method_title       = __('CashiPay', 'cashipay');
         $this->method_description = __('Accept payments via CashiPay wallet — QR-code & OTP.', 'cashipay');
-        $this->supports           = ['products'];
+        $this->supports           = ['products', 'refunds'];
 
         $this->init_form_fields();
         $this->init_settings();
@@ -156,7 +156,14 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
     // -------------------------------------------------------------------------
 
     public function process_payment($order_id): array {
-        $order  = wc_get_order($order_id);
+        $order = wc_get_order($order_id);
+
+        // Guard: order must exist (defensive against HPOS edge cases).
+        if (!$order) {
+            wc_add_notice(__('Order not found. Please try again.', 'cashipay'), 'error');
+            return ['result' => 'failure'];
+        }
+
         $mode   = $this->get_option('payment_mode', 'both');
         $wallet = '';
 
@@ -168,11 +175,15 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
         $callback_url = rest_url("cashipay/v1/webhook/{$webhook_key}");
         $return_url   = $this->get_return_url($order);
 
+        // Normalize currency (I4: guard against lowercase/trailing spaces).
+        $currency = strtoupper(trim($this->get_option('currency', 'SDG')));
+
         $payload = [
-            'merchantOrderId' => (string) $order_id,
+            // Use the public-facing order number, not the internal post ID (I3).
+            'merchantOrderId' => $order->get_order_number(),
             'amount'          => [
                 'value'    => (float) $order->get_total(),
-                'currency' => $this->get_option('currency', 'SDG'),
+                'currency' => $currency,
             ],
             'description'   => sprintf(
                 /* translators: %s: order number */
@@ -196,8 +207,20 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
         $response = $this->api->create_payment($payload);
 
         if (empty($response['success'])) {
-            $message = $response['message'] ?? __('Payment could not be initiated.', 'cashipay');
-            wc_add_notice($message, 'error');
+            // C3: Log the real error; show only a generic message to the customer.
+            $this->log(
+                sprintf(
+                    'Payment creation failed for order #%s — HTTP %s: %s',
+                    $order->get_order_number(),
+                    $response['http_status'] ?? 'N/A',
+                    $response['message'] ?? 'no message'
+                ),
+                'error'
+            );
+            wc_add_notice(
+                __('Payment could not be initiated. Please try again or contact support.', 'cashipay'),
+                'error'
+            );
             return ['result' => 'failure'];
         }
 
@@ -212,6 +235,14 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
         $order->set_status('pending', __('Awaiting CashiPay payment.', 'cashipay'));
         $order->save();
 
+        $this->log(
+            sprintf(
+                'Payment request created for order #%s — reference: %s.',
+                $order->get_order_number(),
+                $reference
+            )
+        );
+
         return [
             'result'   => 'success',
             'redirect' => $order->get_checkout_payment_url(true),
@@ -219,11 +250,66 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
     }
 
     // -------------------------------------------------------------------------
+    // Refunds (I8)
+    // -------------------------------------------------------------------------
+
+    public function process_refund($order_id, $amount = null, $reason = ''): bool|\WP_Error {
+        $order     = wc_get_order($order_id);
+        $reference = $order ? $order->get_meta('_cashipay_reference') : '';
+
+        if (!$order || empty($reference)) {
+            return new \WP_Error('cashipay_refund', __('No CashiPay payment reference found for this order.', 'cashipay'));
+        }
+
+        if ($order->is_paid()) {
+            // CashiPay's cancel endpoint targets pending payments only.
+            // Completed payments require manual refund via the CashiPay dashboard.
+            return new \WP_Error(
+                'cashipay_refund',
+                __('Completed CashiPay payments cannot be refunded automatically. Please process the refund in your CashiPay merchant dashboard.', 'cashipay')
+            );
+        }
+
+        $response = $this->api->cancel_payment($reference);
+
+        if (!empty($response['success'])) {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: CashiPay payment reference number */
+                    __('CashiPay payment cancelled via API. Reference: %s', 'cashipay'),
+                    $reference
+                )
+            );
+            $this->log(sprintf('Payment cancelled for order #%s — reference: %s.', $order->get_order_number(), $reference));
+            return true;
+        }
+
+        $api_error = $response['message'] ?? 'Unknown API error';
+        $this->log(
+            sprintf('Cancellation failed for order #%s: %s', $order->get_order_number(), $api_error),
+            'error'
+        );
+        return new \WP_Error('cashipay_refund', __('CashiPay cancellation request failed. Please check your CashiPay merchant dashboard.', 'cashipay'));
+    }
+
+    // -------------------------------------------------------------------------
     // Receipt / payment page
     // -------------------------------------------------------------------------
 
     public function receipt_page(int $order_id): void {
-        $order      = wc_get_order($order_id);
+        $order = wc_get_order($order_id);
+
+        if (!$order) {
+            echo '<p>' . esc_html__('Order not found.', 'cashipay') . '</p>';
+            return;
+        }
+
+        // I2: Redirect if the order is already paid.
+        if ($order->is_paid()) {
+            wp_safe_redirect($this->get_return_url($order));
+            exit;
+        }
+
         $reference  = $order->get_meta('_cashipay_reference');
         $qr_url     = $order->get_meta('_cashipay_qr_data_url');
         $wallet     = $order->get_meta('_cashipay_wallet');
@@ -239,14 +325,21 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
     // -------------------------------------------------------------------------
 
     public function ajax_confirm_otp(): void {
+        // C1/C2: Nonce + order-key ownership check.
         check_ajax_referer('cashipay_nonce', 'nonce');
 
-        $order_id = absint($_POST['order_id'] ?? 0);
-        $otp      = sanitize_text_field($_POST['otp'] ?? '');
-        $order    = $order_id ? wc_get_order($order_id) : null;
+        $order_id  = absint($_POST['order_id'] ?? 0);
+        $order_key = sanitize_text_field($_POST['order_key'] ?? '');
+        $otp       = sanitize_text_field($_POST['otp'] ?? '');
+        $order     = $order_id ? wc_get_order($order_id) : null;
 
-        if (!$order || !preg_match('/^\d{4,8}$/', $otp)) {
+        if (!$order || !hash_equals($order->get_order_key(), $order_key)) {
             wp_send_json_error(['message' => __('Invalid request.', 'cashipay')]);
+            return;
+        }
+
+        if (!preg_match('/^\d{4,8}$/', $otp)) {
+            wp_send_json_error(['message' => __('Invalid OTP format.', 'cashipay')]);
             return;
         }
 
@@ -255,30 +348,52 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
         $amount    = (float) $order->get_meta('_cashipay_amount');
 
         if (empty($reference) || empty($wallet)) {
-            wp_send_json_error(['message' => __('Payment session expired.', 'cashipay')]);
+            wp_send_json_error(['message' => __('Payment session not found. Please return to checkout.', 'cashipay')]);
             return;
         }
 
         $response = $this->api->confirm_otp($reference, $amount, $otp, $wallet);
 
         if (!empty($response['success'])) {
+            // C6: Update order status when OTP confirmation succeeds.
+            $confirmed_status = strtoupper($response['status'] ?? '');
+            if (in_array($confirmed_status, ['COMPLETED', 'PAID', 'SUCCESS', 'APPROVED'], true)) {
+                if (!$order->is_paid()) {
+                    $order->payment_complete($reference);
+                    $order->update_meta_data('_cashipay_webhook_processed', 1);
+                    $order->add_order_note(__('CashiPay OTP payment confirmed.', 'cashipay'));
+                    $order->save();
+                    $this->log(sprintf('OTP confirmed — order #%s marked as paid.', $order->get_order_number()));
+                }
+            }
+
             wp_send_json_success([
-                'status'     => $response['status'] ?? '',
+                'status'     => $confirmed_status,
                 'return_url' => $this->get_return_url($order),
             ]);
         } else {
+            // C3: Log the real error; return a generic message to the customer.
+            $this->log(
+                sprintf('OTP confirm failed for order #%s: %s', $order->get_order_number(), $response['message'] ?? 'no message'),
+                'warning'
+            );
             wp_send_json_error([
-                'message' => $response['message'] ?? __('OTP confirmation failed. Please try again.', 'cashipay'),
+                'message' => __('OTP confirmation failed. Please check the code and try again.', 'cashipay'),
             ]);
         }
     }
 
     public function ajax_check_status(): void {
-        $order_id = absint($_POST['order_id'] ?? 0);
-        $order    = $order_id ? wc_get_order($order_id) : null;
+        // C1: Nonce check — prevents unauthenticated order-state enumeration.
+        check_ajax_referer('cashipay_nonce', 'nonce');
 
-        if (!$order) {
-            wp_send_json_error(['message' => __('Order not found.', 'cashipay')]);
+        $order_id  = absint($_POST['order_id'] ?? 0);
+        $order_key = sanitize_text_field($_POST['order_key'] ?? '');
+        $order     = $order_id ? wc_get_order($order_id) : null;
+
+        // C2: Order-key ownership check.
+        if (!$order || !hash_equals($order->get_order_key(), $order_key)) {
+            wp_send_json_error(['message' => __('Invalid request.', 'cashipay')]);
             return;
         }
 
@@ -298,7 +413,7 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
 
         $response = $this->api->get_payment($reference);
 
-        if (!isset($response['success'])) {
+        if (empty($response['success']) && !isset($response['status'])) {
             wp_send_json_error(['message' => __('Status check failed.', 'cashipay')]);
             return;
         }
@@ -320,6 +435,16 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
     public function enqueue_scripts(): void {
         if (!is_checkout_pay_page()) {
             return;
+        }
+
+        // I7: Only enqueue when this gateway is the active one for the order.
+        global $wp;
+        $order_id = absint($wp->query_vars['order-pay'] ?? 0);
+        if ($order_id) {
+            $order = wc_get_order($order_id);
+            if (!$order || $order->get_payment_method() !== $this->id) {
+                return;
+            }
         }
 
         wp_enqueue_style(
@@ -345,7 +470,16 @@ class WC_CashiPay_Gateway extends WC_Payment_Gateway {
                 'redirecting'   => __('Payment confirmed! Redirecting…', 'cashipay'),
                 'error'         => __('An error occurred. Please try again.', 'cashipay'),
                 'confirmButton' => __('Confirm Payment', 'cashipay'),
+                'timeout'       => __('Payment session expired. Please contact support if you were charged.', 'cashipay'),
             ],
         ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+
+    private function log(string $message, string $level = 'info'): void {
+        wc_get_logger()->log($level, $message, ['source' => 'cashipay']);
     }
 }

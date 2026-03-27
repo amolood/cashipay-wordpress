@@ -6,10 +6,11 @@
     if (!wrap.length) return;
 
     var orderId   = wrap.data('order-id');
+    var orderKey  = wrap.data('order-key');  // C2: bound to every request for ownership verification
     var returnUrl = wrap.data('return-url');
     var timer     = null;
     var polls     = 0;
-    var MAX_POLLS = 120; // 10 min @ 5 s
+    var MAX_POLLS = 120; // 10 min @ 5 s intervals
 
     startPolling();
 
@@ -29,10 +30,11 @@
         clearMsg();
 
         $.post(cashipayData.ajaxUrl, {
-            action:   'cashipay_confirm_otp',
-            nonce:    cashipayData.nonce,
-            order_id: orderId,
-            otp:      otp,
+            action:    'cashipay_confirm_otp',
+            nonce:     cashipayData.nonce,
+            order_id:  orderId,
+            order_key: orderKey,
+            otp:       otp,
         })
         .done(function (res) {
             if (res.success) {
@@ -68,13 +70,17 @@
     function checkStatus() {
         if (++polls > MAX_POLLS) {
             stopPolling();
-            setStatus('');
+            // I5: Show a clear timeout message instead of leaving the customer with a blank spinner.
+            $('.cashipay-spinner').hide();
+            setStatus(cashipayData.i18n.timeout);
             return;
         }
 
         $.post(cashipayData.ajaxUrl, {
-            action:   'cashipay_check_status',
-            order_id: orderId,
+            action:    'cashipay_check_status',
+            nonce:     cashipayData.nonce,   // C1: nonce on every poll request
+            order_id:  orderId,
+            order_key: orderKey,             // C2: ownership key on every poll request
         })
         .done(function (res) {
             if (!res.success) return;

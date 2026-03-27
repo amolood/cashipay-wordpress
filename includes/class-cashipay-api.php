@@ -39,11 +39,28 @@ class CashiPay_API {
         ]);
     }
 
+    /**
+     * Returns true if the stored key is non-empty (used by the admin settings test).
+     */
+    public function has_api_key(): bool {
+        return !empty($this->api_key);
+    }
+
     private function request(string $method, string $path, array $body = []): array {
+        // Never call home without a key — fail fast with a clear message.
+        if (empty($this->api_key)) {
+            return [
+                'success' => false,
+                'message' => 'CashiPay API key is not configured.',
+            ];
+        }
+
         $args = [
             'method'  => $method,
             'timeout' => $this->timeout,
             'headers' => [
+                // Key is sent here but never logged; callers must not log the
+                // full $args array.
                 'Authorization' => 'Bearer ' . $this->api_key,
                 'Accept'        => 'application/json',
                 'Content-Type'  => 'application/json',
@@ -66,6 +83,9 @@ class CashiPay_API {
         $code   = (int) wp_remote_retrieve_response_code($response);
         $parsed = json_decode(wp_remote_retrieve_body($response), true) ?? [];
 
-        return array_merge(['success' => $code >= 200 && $code < 300, 'http_status' => $code], $parsed);
+        return array_merge(
+            ['success' => $code >= 200 && $code < 300, 'http_status' => $code],
+            $parsed
+        );
     }
 }
