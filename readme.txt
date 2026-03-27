@@ -4,81 +4,192 @@ Tags: woocommerce, payment gateway, cashipay, wallet, qr code, otp, sudan
 Requires at least: 5.8
 Tested up to: 6.6
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
-CashiPay wallet payment gateway for WooCommerce — QR-code & OTP payments with per-payment webhook authentication.
+Accept payments through the CashiPay digital wallet directly in WooCommerce — QR-code scanning, OTP confirmation, and real-time order updates.
 
 == Description ==
 
-Integrates the CashiPay digital wallet payment gateway with WooCommerce. Customers can pay using a QR code (scanned with the CashiPay app) or via OTP sent to their wallet number.
+**CashiPay Payment Gateway** integrates the CashiPay digital wallet into your WooCommerce store, giving customers a fast, familiar checkout experience using their existing CashiPay wallet balance.
 
-**Features**
+Customers can pay by scanning a QR code with the CashiPay mobile app, or by entering their wallet number at checkout and confirming with a one-time password (OTP). Both methods work in parallel — you choose which to offer.
 
-* QR code payments — customer scans with the CashiPay app at checkout
-* OTP payments — customer enters their wallet number, receives an OTP
-* Both modes can be offered simultaneously; customer chooses
-* Per-payment webhook authentication — no shared webhook secret required
-* Real-time payment status polling (every 5 seconds)
-* Automatic WooCommerce order status updates on payment events
-* Staging and production environment support
+Orders update automatically the moment payment is confirmed, cancelled, or expired, with no manual reconciliation required.
+
+= Key Features =
+
+**Payment methods**
+
+* **QR Code** — customer scans the code with the CashiPay app; no manual data entry required
+* **OTP** — customer enters their wallet number at checkout and approves with a 4–8 digit OTP
+* **Dual mode** — offer both simultaneously and let the customer choose
+
+**Security**
+
+* Per-payment webhook keys — each order gets a unique, unguessable callback URL; no shared secret is needed
+* Replay protection — processed webhooks are permanently marked and silently ignored on repeat delivery
+* Concurrency lock — a transient mutex prevents duplicate order completion under parallel webhook delivery
+* Order ownership verification — every AJAX request is bound to the order key, preventing cross-order enumeration
+
+**Reliability**
+
+* Real-time status polling every 5 seconds while the customer is on the payment page
+* Automatic fallback redirect after 10 minutes if no webhook is received
+* Detailed WooCommerce order notes and a structured log under **WooCommerce → Status → Logs → cashipay**
+* Failed, expired, and cancelled payments are handled separately with the correct WooCommerce status
+
+**Developer friendly**
+
+* Three action hooks for custom integrations (see below)
+* Clean separation between API client, gateway, and webhook handler
 * HPOS (High-Performance Order Storage) compatible
+* Staging and production environments, switchable from the settings screen
 
-**Webhook actions (for developers)**
+= Action Hooks =
 
-* `cashipay_payment_completed` — fires when a payment is confirmed
-* `cashipay_payment_failed` — fires when a payment expires, is cancelled, or fails
-* `cashipay_webhook_received` — fires on every incoming webhook
+Extend or react to payment events without modifying plugin files:
+
+`do_action( 'cashipay_payment_completed', WC_Order $order, array $payload )`
+Fires when CashiPay confirms a successful payment.
+
+`do_action( 'cashipay_payment_failed', WC_Order $order, array $payload, string $status )`
+Fires when a payment is marked as failed or expired. `$status` is one of `FAILED`, `EXPIRED`, or `CANCELLED`.
+
+`do_action( 'cashipay_webhook_received', WC_Order $order, array $payload )`
+Fires on every inbound webhook, regardless of status. Useful for logging and auditing.
+
+= Example: Send a custom notification on payment completion =
+
+    add_action( 'cashipay_payment_completed', function( $order, $payload ) {
+        // $order is a fully hydrated WC_Order object.
+        $reference = $payload['referenceNumber'] ?? '';
+        // Your custom logic here.
+    }, 10, 2 );
 
 == Installation ==
 
-1. Upload the `cashipay-payment-gateway` folder to `/wp-content/plugins/`.
-2. Activate the plugin via **Plugins → Installed Plugins**.
-3. Go to **WooCommerce → Settings → Payments → CashiPay** and configure:
-   - Select **Environment** (Staging for testing, Production for live).
-   - Paste your **API Key** for the chosen environment.
-   - Choose a **Payment Mode** (QR, OTP, or both).
-4. Save settings. CashiPay will now appear as a payment option at checkout.
+= Minimum Requirements =
 
-**Webhook URL**
+* WordPress 5.8 or higher
+* WooCommerce 6.0 or higher
+* PHP 7.4 or higher
+* An active CashiPay merchant account with a valid API key
 
-CashiPay will send payment notifications to:
+= From the WordPress admin =
 
-    https://yoursite.com/wp-json/cashipay/v1/webhook/{per-payment-key}
+1. Go to **Plugins → Add New** and search for **CashiPay Payment Gateway**.
+2. Click **Install Now**, then **Activate**.
+3. Go to **WooCommerce → Settings → Payments → CashiPay**.
+4. Enter your API key, select your environment, and save.
 
-This URL is generated automatically per order — no manual configuration needed.
+= Manual installation =
+
+1. Download the plugin zip and extract it.
+2. Upload the `cashipay-payment-gateway` folder to `/wp-content/plugins/`.
+3. Activate via **Plugins → Installed Plugins**.
+4. Configure under **WooCommerce → Settings → Payments → CashiPay**.
+
+= Configuration =
+
+| Setting | Description |
+|---|---|
+| **Environment** | `Staging` for development and testing; `Production` for live transactions. |
+| **Staging API Key** | Your CashiPay test API key. Used when environment is set to Staging. |
+| **Production API Key** | Your CashiPay live API key. Never share or commit this value. |
+| **Currency Code** | ISO 4217 currency code sent to CashiPay with each payment request (default: `SDG`). |
+| **Payment Mode** | `QR Code only`, `OTP only`, or `QR Code & OTP` (customer chooses at checkout). |
+
+= Webhook URL =
+
+The plugin generates a unique callback URL per order automatically:
+
+    https://yourstore.com/wp-json/cashipay/v1/webhook/{per-payment-key}
+
+No webhook URL configuration is required in your CashiPay merchant dashboard. The per-payment key in the URL acts as the authentication token for each transaction.
 
 == Frequently Asked Questions ==
 
 = Where do I get my API key? =
 
-Log in to your CashiPay merchant dashboard and copy the API key for the desired environment.
+Log in to your CashiPay merchant dashboard and navigate to **API Keys** or **Developer Settings**. Copy the key for the environment you want to use (staging or production).
 
 = Do I need to configure a webhook URL in my CashiPay dashboard? =
 
-No. The plugin uses a unique per-payment key embedded in the callback URL, so no shared webhook secret is required.
+No. Each payment request embeds a unique, unguessable key in its callback URL. The plugin authenticates incoming webhooks using that key — no shared secret or dashboard configuration is required.
 
-= The QR code image is not showing. =
+= The QR code is not appearing on the payment page. =
 
-Make sure your staging/production API key is correct. The QR `dataUrl` is returned by the CashiPay API in the payment creation response.
+Check the following:
 
-= Can I hook into payment events? =
+1. Confirm the correct API key is entered for the active environment under **WooCommerce → Settings → Payments → CashiPay**.
+2. Check **WooCommerce → Status → Logs → cashipay** for any API errors returned during payment creation.
+3. Verify that your server can reach the CashiPay API over HTTPS (outbound port 443).
 
-Yes. Use the `cashipay_payment_completed`, `cashipay_payment_failed`, and `cashipay_webhook_received` action hooks.
+= Payment is confirmed in CashiPay but the WooCommerce order is still pending. =
+
+This usually means the webhook did not reach your store. Check:
+
+1. Your site is publicly accessible (not behind a firewall or in local development).
+2. **WooCommerce → Status → Logs → cashipay** for any errors during webhook processing.
+3. The WordPress REST API is enabled — visit `https://yourstore.com/wp-json/` to verify.
+
+= Does this plugin support refunds? =
+
+Partially. For orders that are still pending payment, the plugin can send a cancellation request to CashiPay via **WooCommerce → Orders → Refund**. For completed payments, the refund must be processed manually in your CashiPay merchant dashboard, as the CashiPay API does not expose a programmatic refund endpoint for settled transactions.
+
+= Is the plugin compatible with the WooCommerce block checkout? =
+
+The current version supports the classic WooCommerce checkout only. Block checkout compatibility is planned for a future release.
+
+= How do I test the integration before going live? =
+
+1. Set **Environment** to `Staging` and enter your staging API key.
+2. Place a test order on your store.
+3. Use the CashiPay test app or sandbox tools to complete or decline the payment.
+4. Verify the WooCommerce order status updates correctly and check the `cashipay` log for details.
+5. Once satisfied, switch **Environment** to `Production` and enter your live API key.
+
+= Can I use this plugin on a multisite installation? =
+
+Yes. The plugin is network-activatable. Each subsite manages its own gateway settings independently.
 
 == Screenshots ==
 
-1. Gateway settings screen in WooCommerce.
-2. QR code payment page shown to the customer.
-3. OTP payment form shown to the customer.
+1. CashiPay gateway settings page in WooCommerce.
+2. Checkout page showing the wallet number field (OTP mode).
+3. Payment page showing the QR code for scanning.
+4. Payment page showing the OTP confirmation form.
+5. WooCommerce order with CashiPay payment notes and reference number.
 
 == Changelog ==
+
+= 1.0.1 =
+* Security: added nonce verification and order-key ownership check to all AJAX endpoints.
+* Security: raw API error messages are no longer shown to customers; they are logged internally.
+* Security: webhook replay protection — processed webhooks are marked and silently ignored.
+* Security: transient lock prevents duplicate `payment_complete()` calls under parallel delivery.
+* Fix: OTP confirmation now calls `payment_complete()` immediately on API success, without waiting for the webhook.
+* Fix: receipt page now redirects to the order confirmation screen if the order is already paid.
+* Fix: `process_payment()` now guards against `wc_get_order()` returning false.
+* Fix: polling timeout now shows a clear message and stops the spinner after 10 minutes.
+* Fix: scripts and nonces are only enqueued for CashiPay orders on the pay page.
+* Fix: `CANCELLED` payments now map to WooCommerce `cancelled` status; only `FAILED`/`EXPIRED` map to `failed`.
+* Improvement: `merchantOrderId` now uses the public order number instead of the internal post ID.
+* Improvement: currency code is normalized (uppercased, trimmed) before sending to the API.
+* Improvement: added `process_refund()` support for pending payment cancellation via the API.
+* Improvement: full structured logging via `wc_get_logger()` under the `cashipay` source.
+* Improvement: added Settings link on the Plugins page.
+* Improvement: added `Domain Path`, `Plugin URI`, and `Author URI` to the plugin header.
 
 = 1.0.0 =
 * Initial release.
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+Recommended security update. Adds nonce and ownership verification to AJAX endpoints, replay protection on webhooks, and fixes the OTP payment completion path. Upgrade before processing live transactions.
 
 = 1.0.0 =
 Initial release — no upgrade steps required.
